@@ -1,0 +1,8 @@
+subscription_id = "<Azure Subscription Id>"
+databricks_host = "<Workspace Url>"
+resource_group_name = "<Resource Group Name>"
+location = "<Azure Region>"
+storage_account_name = "<Globally Unique Name>"
+container_name = "billing"
+catalog_name = "billing"
+schema_name = "azure"

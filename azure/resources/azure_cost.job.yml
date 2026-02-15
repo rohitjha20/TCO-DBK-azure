@@ -1,0 +1,13 @@
+resources:
+  jobs:
+    azure_cost_job:
+      name: azure_cost_job
+
+      trigger:
+        file_arrival:
+          url: ${var.volume_path}
+
+      tasks:
+        - task_key: refresh_pipeline
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.azure_cost_pipeline.id}

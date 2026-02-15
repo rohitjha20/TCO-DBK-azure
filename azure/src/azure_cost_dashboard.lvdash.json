@@ -1,0 +1,1729 @@
+{
+  "datasets": [
+    {
+      "name": "ae7776ee",
+      "displayName": "Total Cost",
+      "queryLines": [
+        "SELECT *\n",
+        "FROM billing.azure.actuals_gold"
+      ]
+    },
+    {
+      "name": "0ae67941",
+      "displayName": "Cluster TCO",
+      "queryLines": [
+        "SELECT\n",
+        "  ag.*,\n",
+        "  c.*,\n",
+        "  w.warehouse_id AS warehouse_id,\n",
+        "  w.warehouse_name AS warehouse_name,\n",
+        "  w.warehouse_type AS warehouse_type,\n",
+        "  w.warehouse_size AS warehouse_size,\n",
+        "  w.tags AS warehouse_tags\n",
+        "FROM billing.azure.actuals_gold ag\n",
+        "LEFT JOIN system.compute.clusters c\n",
+        "  ON CAST(ag.parsedTags:ClusterId AS STRING) = c.cluster_id\n",
+        "LEFT JOIN system.compute.warehouses w\n",
+        "  ON CAST(ag.parsedTags:SqlEndpointId AS STRING) = w.warehouse_id"
+      ]
+    },
+    {
+      "name": "538a5330",
+      "displayName": "usage_analyze_tags",
+      "queryLines": [
+        "WITH\n",
+        "usage as (\n",
+        "  select\n",
+        "    date_trunc('QUARTER', date) as usage_quarter,\n",
+        "    date_trunc('MONTH', date) as usage_month,\n",
+        "    date_trunc('WEEK', date) as usage_week,\n",
+        "    u.*\n",
+        "  from actuals_gold as u\n",
+        "),\n",
+        "-- eval time_key param\n",
+        "usage_time_key as (\n",
+        "  select\n",
+        "    identifier\n",
+        "    (\n",
+        "      case\n",
+        "        when :param_time_key = 'Quarter' then 'usage_quarter'\n",
+        "        when :param_time_key = 'Month' then 'usage_month'\n",
+        "        when :param_time_key = 'Week' then 'usage_week'\n",
+        "        else 'date'\n",
+        "      end\n",
+        "    ) as time_key,\n",
+        "    *\n",
+        "  from usage\n",
+        "),\n",
+        "tag_entry_parsing AS (\n",
+        "  SELECT\n",
+        "    EXPLODE(\n",
+        "      SPLIT(\n",
+        "        IF(\n",
+        "          TRIM(:param_single_tag_key) = '<USE TAG FILTER>',\n",
+        "          :param_tag_entries,\n",
+        "          :param_single_tag_key\n",
+        "        ),\n",
+        "        ';'\n",
+        "      )\n",
+        "    ) AS tag_entry,\n",
+        "    CONTAINS(tag_entry, '=') AS is_filter,\n",
+        "    IF(is_filter, SPLIT(tag_entry, '=')[0], tag_entry) AS tag_key\n",
+        "),\n",
+        "tag_entry_parsed AS (\n",
+        "  SELECT\n",
+        "    ARRAY_SORT(COLLECT_LIST(tag_key)) AS all_keys,\n",
+        "    ARRAY_SORT(COLLECT_LIST(IF(is_filter, tag_key, NULL))) AS filter_keys,\n",
+        "    ARRAY_SORT(COLLECT_LIST(IF(is_filter, tag_entry, NULL))) AS filter_expected\n",
+        "  FROM tag_entry_parsing\n",
+        "),\n",
+        "usage_with_matching_tag_kvp AS (\n",
+        "  SELECT * FROM (\n",
+        "    SELECT\n",
+        "      TRANSFORM(\n",
+        "        filter_keys,\n",
+        "        k -> CONCAT(k, '=', FROM_JSON(CAST(parsedTags AS STRING), 'MAP<STRING, STRING>')[k])\n",
+        "      ) AS filter_actual,\n",
+        "      TRANSFORM(\n",
+        "        all_keys,\n",
+        "        k -> CONCAT(k, '=', FROM_JSON(CAST(parsedTags AS STRING), 'MAP<STRING, STRING>')[k])\n",
+        "      ) AS kvp,\n",
+        "      IF(\n",
+        "        SIZE(filter_keys) = 0 OR filter_actual = filter_expected,\n",
+        "        ARRAY_JOIN(kvp, ';'),\n",
+        "        ''\n",
+        "      ) AS _custom_tag_key_value_pairs,\n",
+        "      IF(_custom_tag_key_value_pairs = \"\", \"<MISMATCH>\", _custom_tag_key_value_pairs) AS custom_tag_key_value_pairs,\n",
+        "      *\n",
+        "    FROM usage_time_key, tag_entry_parsed\n",
+        "  ) WHERE :param_show_tag_mismatch = 'Yes' OR custom_tag_key_value_pairs != '<MISMATCH>'\n",
+        ")\n",
+        "\n",
+        "SELECT\n",
+        "  time_key, meterName, meterSubCategory, meterCategory, vendor, custom_tag_key_value_pairs, price\n",
+        "FROM usage_with_matching_tag_kvp"
+      ],
+      "parameters": [
+        {
+          "displayName": "param_single_tag_key",
+          "keyword": "param_single_tag_key",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "<USE TAG FILTER>"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "param_tag_entries",
+          "keyword": "param_tag_entries",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "JobId"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "param_show_tag_mismatch",
+          "keyword": "param_show_tag_mismatch",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "Yes"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "displayName": "param_time_key",
+          "keyword": "param_time_key",
+          "dataType": "STRING",
+          "defaultSelection": {
+            "values": {
+              "dataType": "STRING",
+              "values": [
+                {
+                  "value": "Week"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "catalog": "billing",
+      "schema": "azure"
+    },
+    {
+      "name": "4c5663a7",
+      "displayName": "select_tag_key",
+      "queryLines": [
+        "SELECT DISTINCT EXPLODE(\n",
+        "  MAP_KEYS(\n",
+        "    FROM_JSON(\n",
+        "      CAST(parsedTags AS STRING),\n",
+        "      'MAP<STRING, STRING>'\n",
+        "    )\n",
+        "  )\n",
+        ") AS tag_key\n",
+        "FROM actuals_gold"
+      ],
+      "catalog": "billing",
+      "schema": "azure"
+    },
+    {
+      "name": "e5e0d82b",
+      "displayName": "select_time_key",
+      "queryLines": [
+        "select explode(array(\n",
+        "  'Day',\n",
+        "  'Week',\n",
+        "  'Month'\n",
+        ")) as time_key"
+      ]
+    },
+    {
+      "name": "60709c16",
+      "displayName": "select_yes_no_tag_show_mismatch",
+      "queryLines": [
+        "select explode(array(\n",
+        "  'Yes',\n",
+        "  'No'\n",
+        ")) as toggle\n"
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "af018652",
+      "displayName": "TCO",
+      "layout": [
+        {
+          "widget": {
+            "name": "0f075b0c",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae7776ee",
+                  "fields": [
+                    {
+                      "name": "meterCategory",
+                      "expression": "`meterCategory`"
+                    },
+                    {
+                      "name": "daily(date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `date`)"
+                    },
+                    {
+                      "name": "sum(price)",
+                      "expression": "SUM(`price`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "daily(date)",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "axis": {
+                    "title": "Date"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(price)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "axis": {
+                    "title": "Price"
+                  }
+                },
+                "color": {
+                  "fieldName": "meterCategory",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "legend": {
+                    "title": "Meter Category"
+                  }
+                }
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 6,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "330c17ec",
+            "queries": [
+              {
+                "name": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6ca8d9172db91fe421be41298e_meterSubCategory",
+                "query": {
+                  "datasetName": "ae7776ee",
+                  "fields": [
+                    {
+                      "name": "meterSubCategory",
+                      "expression": "`meterSubCategory`"
+                    },
+                    {
+                      "name": "meterSubCategory_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "meterSubCategory",
+                    "queryName": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6ca8d9172db91fe421be41298e_meterSubCategory"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Meter Sub Category"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 3,
+            "width": 3,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "adc6f62d",
+            "queries": [
+              {
+                "name": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6ca8d9172db91fe421be41298e_meterName",
+                "query": {
+                  "datasetName": "ae7776ee",
+                  "fields": [
+                    {
+                      "name": "meterName",
+                      "expression": "`meterName`"
+                    },
+                    {
+                      "name": "meterName_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "meterName",
+                    "queryName": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6ca8d9172db91fe421be41298e_meterName"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Meter Name"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 3,
+            "width": 3,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "fd08321e",
+            "multilineTextboxSpec": {
+              "lines": [
+                "<span style=\"font-size:24px;font-family:Tahoma\">**Databricks Cloud Infrastructure Cost (Azure)**</span>\n",
+                "\n",
+                "- <span style=\"font-size:12px;font-family:Tahoma\">This dashboard includes the cloud infrastructure & DBU costs related to Azure Databricks</span>\n",
+                "- <span style=\"font-size:12px;font-family:Tahoma\">The cost includes cost related to VM, storage, networking</span>\n",
+                "- <span style=\"font-size:12px;font-family:Tahoma\">Use the global filter for Vendor = Databricks, to filter for just costs related to Databricks deployment (by default, all Azure services are included from Cost Management export) \\\\</span>"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "total-cost",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae7776ee",
+                  "fields": [
+                    {
+                      "name": "sum(price)",
+                      "expression": "SUM(`price`)"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`meterCategory` IS NULL OR `meterCategory` NOT IN ('Azure Databricks')"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(price)"
+                }
+              },
+              "frame": {
+                "title": "Total Azure costs",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 3,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "0e81729a",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "ae7776ee",
+                  "fields": [
+                    {
+                      "name": "sum(price)",
+                      "expression": "SUM(`price`)"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`meterCategory` IN ('Azure Databricks')"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(price)"
+                }
+              },
+              "frame": {
+                "title": "Total Databricks costs",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 4,
+            "width": 3,
+            "height": 2
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS"
+    },
+    {
+      "name": "94586be2",
+      "displayName": "Cost by Compute",
+      "layout": [
+        {
+          "widget": {
+            "name": "7af1a10d",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "0ae67941",
+                  "fields": [
+                    {
+                      "name": "meterCategory",
+                      "expression": "`meterCategory`"
+                    },
+                    {
+                      "name": "daily(date)",
+                      "expression": "DATE_TRUNC(\"DAY\", `date`)"
+                    },
+                    {
+                      "name": "sum(price)",
+                      "expression": "SUM(`price`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "daily(date)",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "axis": {
+                    "title": "Date"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(price)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "axis": {
+                    "title": "Price"
+                  },
+                  "displayName": "Sum of price"
+                },
+                "color": {
+                  "fieldName": "meterCategory",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "legend": {
+                    "title": "Meter Category"
+                  },
+                  "displayName": "meterCategory"
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Daily breakdown of cost"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 5,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "541c5f53",
+            "queries": [
+              {
+                "name": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6b8fb4190a990edd017b096c66_cluster_id",
+                "query": {
+                  "datasetName": "0ae67941",
+                  "fields": [
+                    {
+                      "name": "cluster_id",
+                      "expression": "`cluster_id`"
+                    },
+                    {
+                      "name": "cluster_id_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "cluster_id",
+                    "queryName": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6b8fb4190a990edd017b096c66_cluster_id"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Cluster Id"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 2,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "13f451f7",
+            "queries": [
+              {
+                "name": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6b8fb4190a990edd017b096c66_data_security_mode",
+                "query": {
+                  "datasetName": "0ae67941",
+                  "fields": [
+                    {
+                      "name": "data_security_mode",
+                      "expression": "`data_security_mode`"
+                    },
+                    {
+                      "name": "data_security_mode_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "data_security_mode",
+                    "queryName": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6b8fb4190a990edd017b096c66_data_security_mode"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Data Security Mode"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 2,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "dc8d5c46",
+            "queries": [
+              {
+                "name": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6b8fb4190a990edd017b096c66_dbr_version",
+                "query": {
+                  "datasetName": "0ae67941",
+                  "fields": [
+                    {
+                      "name": "dbr_version",
+                      "expression": "`dbr_version`"
+                    },
+                    {
+                      "name": "dbr_version_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "dbr_version",
+                    "queryName": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6b8fb4190a990edd017b096c66_dbr_version"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "DBR Version"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 3,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "86722f58",
+            "queries": [
+              {
+                "name": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6b8fb4190a990edd017b096c66_cluster_source",
+                "query": {
+                  "datasetName": "0ae67941",
+                  "fields": [
+                    {
+                      "name": "cluster_source",
+                      "expression": "`cluster_source`"
+                    },
+                    {
+                      "name": "cluster_source_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "cluster_source",
+                    "queryName": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6b8fb4190a990edd017b096c66_cluster_source"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Cluster Source"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 3,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "6b38a470",
+            "queries": [
+              {
+                "name": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6b8fb4190a990edd017b096c66_cluster_name",
+                "query": {
+                  "datasetName": "0ae67941",
+                  "fields": [
+                    {
+                      "name": "cluster_name",
+                      "expression": "`cluster_name`"
+                    },
+                    {
+                      "name": "cluster_name_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "cluster_name",
+                    "queryName": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6b8fb4190a990edd017b096c66_cluster_name"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Cluster Name"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "577df529",
+            "queries": [
+              {
+                "name": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6b8fb4190a990edd017b096c66_worker_count",
+                "query": {
+                  "datasetName": "0ae67941",
+                  "fields": [
+                    {
+                      "name": "min(worker_count)",
+                      "expression": "MIN(`worker_count`)"
+                    },
+                    {
+                      "name": "max(worker_count)",
+                      "expression": "MAX(`worker_count`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "range-slider",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "worker_count",
+                    "queryName": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6b8fb4190a990edd017b096c66_worker_count"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Worker Count"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 3,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "per-cluster-costs",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "0ae67941",
+                  "fields": [
+                    {
+                      "name": "cluster_name",
+                      "expression": "`cluster_name`"
+                    },
+                    {
+                      "name": "warehouse_name",
+                      "expression": "`warehouse_name`"
+                    },
+                    {
+                      "name": "meterCategory",
+                      "expression": "`meterCategory`"
+                    },
+                    {
+                      "name": "sum(price)",
+                      "expression": "SUM(`price`)"
+                    }
+                  ],
+                  "cubeGroupingSets": {
+                    "sets": [
+                      {
+                        "fieldNames": [
+                          "cluster_name",
+                          "warehouse_name"
+                        ]
+                      },
+                      {
+                        "fieldNames": [
+                          "meterCategory"
+                        ]
+                      }
+                    ]
+                  },
+                  "disaggregated": false,
+                  "orders": [
+                    {
+                      "direction": "ASC",
+                      "expression": "`cluster_name`"
+                    },
+                    {
+                      "direction": "ASC",
+                      "expression": "`warehouse_name`"
+                    },
+                    {
+                      "direction": "ASC",
+                      "expression": "`meterCategory`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "pivot",
+              "encodings": {
+                "rows": [
+                  {
+                    "fieldName": "cluster_name"
+                  },
+                  {
+                    "fieldName": "warehouse_name"
+                  }
+                ],
+                "columns": [
+                  {
+                    "fieldName": "meterCategory"
+                  }
+                ],
+                "cell": {
+                  "type": "multi-cell",
+                  "fields": [
+                    {
+                      "fieldName": "sum(price)",
+                      "cellType": "text"
+                    }
+                  ]
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Per-cluster costs "
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 11,
+            "width": 6,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "warehouse-name",
+            "queries": [
+              {
+                "name": "dashboards/01f0ba1ed79b126d9495f4decb224384/datasets/01f0ba1ed79b1a3dbfa36d6f070ddd65_warehouse_name",
+                "query": {
+                  "datasetName": "0ae67941",
+                  "fields": [
+                    {
+                      "name": "warehouse_name",
+                      "expression": "`warehouse_name`"
+                    },
+                    {
+                      "name": "warehouse_name_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "warehouse_name",
+                    "queryName": "dashboards/01f0ba1ed79b126d9495f4decb224384/datasets/01f0ba1ed79b1a3dbfa36d6f070ddd65_warehouse_name"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Warehouse Name"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "f9039b07",
+            "queries": [
+              {
+                "name": "dashboards/01f0ba1ed79b126d9495f4decb224384/datasets/01f0ba1ed79b1a3dbfa36d6f070ddd65_workspace_id",
+                "query": {
+                  "datasetName": "0ae67941",
+                  "fields": [
+                    {
+                      "name": "workspace_id",
+                      "expression": "`workspace_id`"
+                    },
+                    {
+                      "name": "workspace_id_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "workspace_id",
+                    "queryName": "dashboards/01f0ba1ed79b126d9495f4decb224384/datasets/01f0ba1ed79b1a3dbfa36d6f070ddd65_workspace_id"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Warehouse ID"
+              }
+            }
+          },
+          "position": {
+            "x": 2,
+            "y": 4,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "0828d822",
+            "multilineTextboxSpec": {
+              "lines": [
+                "<span style=\"font-size:24px;font-family:Tahoma\">**Cost by compute**</span>\n",
+                "\n",
+                "- <span style=\"font-size:12px;font-family:Tahoma\">View detailed costs by compute type - cluster or warehouse</span>\n",
+                "- <span style=\"font-size:12px;font-family:Tahoma\">Please note that several cost types will not be tied to a cluster or warehouse, such as severless notebooks, endpoints, networking, apps etc. </span>"
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 2
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS"
+    },
+    {
+      "name": "a7a613ed",
+      "displayName": "Global Filters",
+      "layout": [
+        {
+          "widget": {
+            "name": "a633d164",
+            "queries": [
+              {
+                "name": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6ca8d9172db91fe421be41298e_date",
+                "query": {
+                  "datasetName": "ae7776ee",
+                  "fields": [
+                    {
+                      "name": "date",
+                      "expression": "`date`"
+                    },
+                    {
+                      "name": "date_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6b8fb4190a990edd017b096c66_date",
+                "query": {
+                  "datasetName": "0ae67941",
+                  "fields": [
+                    {
+                      "name": "date",
+                      "expression": "`date`"
+                    },
+                    {
+                      "name": "date_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ad345aa31caf8ae61826823ffa8d_time_key",
+                "query": {
+                  "datasetName": "538a5330",
+                  "fields": [
+                    {
+                      "name": "time_key",
+                      "expression": "`time_key`"
+                    },
+                    {
+                      "name": "time_key_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-date-range-picker",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "date",
+                    "queryName": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6ca8d9172db91fe421be41298e_date"
+                  },
+                  {
+                    "fieldName": "date",
+                    "queryName": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6b8fb4190a990edd017b096c66_date"
+                  },
+                  {
+                    "fieldName": "time_key",
+                    "queryName": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ad345aa31caf8ae61826823ffa8d_time_key"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Date"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "d69edbbd",
+            "queries": [
+              {
+                "name": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6ca8d9172db91fe421be41298e_meterCategory",
+                "query": {
+                  "datasetName": "ae7776ee",
+                  "fields": [
+                    {
+                      "name": "meterCategory",
+                      "expression": "`meterCategory`"
+                    },
+                    {
+                      "name": "meterCategory_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6b8fb4190a990edd017b096c66_meterCategory",
+                "query": {
+                  "datasetName": "0ae67941",
+                  "fields": [
+                    {
+                      "name": "meterCategory",
+                      "expression": "`meterCategory`"
+                    },
+                    {
+                      "name": "meterCategory_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ad345aa31caf8ae61826823ffa8d_meterCategory",
+                "query": {
+                  "datasetName": "538a5330",
+                  "fields": [
+                    {
+                      "name": "meterCategory",
+                      "expression": "`meterCategory`"
+                    },
+                    {
+                      "name": "meterCategory_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "meterCategory",
+                    "queryName": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6ca8d9172db91fe421be41298e_meterCategory"
+                  },
+                  {
+                    "fieldName": "meterCategory",
+                    "queryName": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6b8fb4190a990edd017b096c66_meterCategory"
+                  },
+                  {
+                    "fieldName": "meterCategory",
+                    "queryName": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ad345aa31caf8ae61826823ffa8d_meterCategory"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Meter Category"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "fb814553",
+            "queries": [
+              {
+                "name": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6ca8d9172db91fe421be41298e_vendor",
+                "query": {
+                  "datasetName": "ae7776ee",
+                  "fields": [
+                    {
+                      "name": "vendor",
+                      "expression": "`vendor`"
+                    },
+                    {
+                      "name": "vendor_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6b8fb4190a990edd017b096c66_vendor",
+                "query": {
+                  "datasetName": "0ae67941",
+                  "fields": [
+                    {
+                      "name": "vendor",
+                      "expression": "`vendor`"
+                    },
+                    {
+                      "name": "vendor_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ad345aa31caf8ae61826823ffa8d_vendor",
+                "query": {
+                  "datasetName": "538a5330",
+                  "fields": [
+                    {
+                      "name": "vendor",
+                      "expression": "`vendor`"
+                    },
+                    {
+                      "name": "vendor_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "vendor",
+                    "queryName": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6ca8d9172db91fe421be41298e_vendor"
+                  },
+                  {
+                    "fieldName": "vendor",
+                    "queryName": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ac6b8fb4190a990edd017b096c66_vendor"
+                  },
+                  {
+                    "fieldName": "vendor",
+                    "queryName": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ad345aa31caf8ae61826823ffa8d_vendor"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Vendor"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 1,
+            "height": 2
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_GLOBAL_FILTERS"
+    },
+    {
+      "name": "6b853bdc",
+      "displayName": "Cost by Tags",
+      "layout": [
+        {
+          "widget": {
+            "name": "586a8fd7",
+            "queries": [
+              {
+                "name": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ad35091a14dea4f4af2ce0487560_tag_key",
+                "query": {
+                  "datasetName": "4c5663a7",
+                  "fields": [
+                    {
+                      "name": "tag_key",
+                      "expression": "`tag_key`"
+                    },
+                    {
+                      "name": "tag_key_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "parameter_dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ad345aa31caf8ae61826823ffa8d_param_single_tag_key",
+                "query": {
+                  "datasetName": "538a5330",
+                  "parameters": [
+                    {
+                      "name": "param_single_tag_key",
+                      "keyword": "param_single_tag_key"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "tag_key",
+                    "queryName": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ad35091a14dea4f4af2ce0487560_tag_key"
+                  },
+                  {
+                    "parameterName": "param_single_tag_key",
+                    "queryName": "parameter_dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ad345aa31caf8ae61826823ffa8d_param_single_tag_key"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Tag Key"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 2,
+            "width": 3,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "29b5b5c2",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "538a5330",
+                  "fields": [
+                    {
+                      "name": "custom_tag_key_value_pairs",
+                      "expression": "`custom_tag_key_value_pairs`"
+                    },
+                    {
+                      "name": "time_key",
+                      "expression": "`time_key`"
+                    },
+                    {
+                      "name": "sum(price)",
+                      "expression": "SUM(`price`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "time_key",
+                  "scale": {
+                    "type": "temporal"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(price)",
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "color": {
+                  "fieldName": "custom_tag_key_value_pairs",
+                  "scale": {
+                    "type": "categorical"
+                  }
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Daily cost breakdown "
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 4,
+            "width": 6,
+            "height": 8
+          }
+        },
+        {
+          "widget": {
+            "name": "e88b627a",
+            "queries": [
+              {
+                "name": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ad374b8415c4972c1db738b87d6f_time_key",
+                "query": {
+                  "datasetName": "e5e0d82b",
+                  "fields": [
+                    {
+                      "name": "time_key",
+                      "expression": "`time_key`"
+                    },
+                    {
+                      "name": "time_key_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "parameter_dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ad345aa31caf8ae61826823ffa8d_param_time_key",
+                "query": {
+                  "datasetName": "538a5330",
+                  "parameters": [
+                    {
+                      "name": "param_time_key",
+                      "keyword": "param_time_key"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "time_key",
+                    "queryName": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ad374b8415c4972c1db738b87d6f_time_key"
+                  },
+                  {
+                    "parameterName": "param_time_key",
+                    "queryName": "parameter_dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ad345aa31caf8ae61826823ffa8d_param_time_key"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "View date by"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 3,
+            "width": 3,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "ea8f7756",
+            "queries": [
+              {
+                "name": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ad37995b142fb9bdc81e4166ed10_toggle",
+                "query": {
+                  "datasetName": "60709c16",
+                  "fields": [
+                    {
+                      "name": "toggle",
+                      "expression": "`toggle`"
+                    },
+                    {
+                      "name": "toggle_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              },
+              {
+                "name": "parameter_dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ad345aa31caf8ae61826823ffa8d_param_show_tag_mismatch",
+                "query": {
+                  "datasetName": "538a5330",
+                  "parameters": [
+                    {
+                      "name": "param_show_tag_mismatch",
+                      "keyword": "param_show_tag_mismatch"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "toggle",
+                    "queryName": "dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ad37995b142fb9bdc81e4166ed10_toggle"
+                  },
+                  {
+                    "parameterName": "param_show_tag_mismatch",
+                    "queryName": "parameter_dashboards/01f0ac6b8fb41077a3a57223e5203976/datasets/01f0ad345aa31caf8ae61826823ffa8d_param_show_tag_mismatch"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Show mismatched"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 3,
+            "width": 3,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "0fd6bb7a",
+            "multilineTextboxSpec": {
+              "lines": [
+                "Show usage without the matching tags as `<MISMATCH>`"
+              ]
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 2,
+            "width": 3,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "cost-per-tag-key-value-pair",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "538a5330",
+                  "fields": [
+                    {
+                      "name": "custom_tag_key_value_pairs",
+                      "expression": "`custom_tag_key_value_pairs`"
+                    },
+                    {
+                      "name": "meterCategory",
+                      "expression": "`meterCategory`"
+                    },
+                    {
+                      "name": "sum(price)",
+                      "expression": "SUM(`price`)"
+                    }
+                  ],
+                  "cubeGroupingSets": {
+                    "sets": [
+                      {
+                        "fieldNames": [
+                          "custom_tag_key_value_pairs"
+                        ]
+                      },
+                      {
+                        "fieldNames": [
+                          "meterCategory"
+                        ]
+                      }
+                    ]
+                  },
+                  "disaggregated": false,
+                  "orders": [
+                    {
+                      "direction": "ASC",
+                      "expression": "`custom_tag_key_value_pairs`"
+                    },
+                    {
+                      "direction": "ASC",
+                      "expression": "`meterCategory`"
+                    }
+                  ]
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "pivot",
+              "encodings": {
+                "rows": [
+                  {
+                    "fieldName": "custom_tag_key_value_pairs"
+                  }
+                ],
+                "columns": [
+                  {
+                    "fieldName": "meterCategory"
+                  }
+                ],
+                "cell": {
+                  "type": "multi-cell",
+                  "fields": [
+                    {
+                      "fieldName": "sum(price)",
+                      "cellType": "text"
+                    }
+                  ]
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Cost per tag key, value pair"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 12,
+            "width": 5,
+            "height": 6
+          }
+        },
+        {
+          "widget": {
+            "name": "a8dd25a7",
+            "multilineTextboxSpec": {
+              "lines": [
+                "<span style=\"font-size:24px;font-family:Tahoma\">**Cost by tags**</span>\n",
+                "\n",
+                "- <span style=\"font-size:12px;font-family:Tahoma\">Group and filter costs by tag</span>s - these include tags applied directly in Azure, but also Databricks "
+              ]
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 2
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS"
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "canvasBackgroundColor": {
+        "light": "#FFFFFF",
+        "dark": "#1F272D"
+      },
+      "widgetBackgroundColor": {
+        "light": "#FFFFFF",
+        "dark": "#11171C"
+      },
+      "widgetBorderColor": {
+        "light": "#000000"
+      },
+      "fontColor": {
+        "light": "#000000",
+        "dark": "#E8ECF0"
+      },
+      "selectionColor": {
+        "light": "#FF00FF",
+        "dark": "#8ACAFF"
+      },
+      "widgetHeaderAlignment": "LEFT"
+    },
+    "genieSpace": {
+      "isEnabled": false
+    }
+  }
+}
